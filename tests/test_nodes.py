@@ -2322,6 +2322,26 @@ class TestTemplateString:
         assert value.conversion == ord("r")
         assert isinstance(value.format_spec, nodes.JoinedStr)
 
+    @pytest.mark.parametrize(
+        ("code", "expected"),
+        [
+            ('t"hello"', "hello"),
+            ('name = "Foo"\nt"{name}"', "Foo"),
+            ('t"{1 + 1}"', "2"),
+            ('name = "Foo"\nt"{name!r}"', "'Foo'"),
+            ('place = 3\nt"{place:03d}"', "003"),
+            ('a = "x"\nb = "y"\nt"{a}-{b}"', "x-y"),
+            ('name = "Foo"\nt"pre {name} pos"', "pre Foo pos"),
+        ],
+    )
+    def test_inference(self, code: str, expected: str) -> None:
+        node = builder.extract_node(f"{code}  #@")
+        assert [value.value for value in node.inferred()] == [expected]
+
+    def test_uninferable_interpolation(self) -> None:
+        node = builder.extract_node('t"{unknown}"  #@')
+        assert node.inferred() == [Uninferable]
+
 
 @pytest.mark.parametrize(
     "node",

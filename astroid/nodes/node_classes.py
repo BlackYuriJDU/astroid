@@ -5581,6 +5581,27 @@ class TemplateStr(NodeNG):
     def get_children(self) -> Iterator[NodeNG]:
         yield from self.values
 
+    def _infer(
+        self, context: InferenceContext | None = None
+    ) -> Generator[InferenceResult, None, InferenceErrorInfo | None]:
+        # Mirrors JoinedStr._infer: a t-string joins its values the same way
+        # an f-string does.
+        if not self.values:
+            yield Const("")
+            return
+
+        uninferable_already_generated = False
+        for inferred in JoinedStr._infer_from_values(self.values, context):
+            failed = inferred is util.Uninferable or (
+                isinstance(inferred, Const) and UNINFERABLE_VALUE in inferred.value
+            )
+            if failed:
+                if not uninferable_already_generated:
+                    uninferable_already_generated = True
+                    yield util.Uninferable
+                    continue
+            yield inferred
+
 
 class Interpolation(NodeNG):
     """Class representing an :class:`ast.Interpolation` node.
@@ -5652,6 +5673,51 @@ class Interpolation(NodeNG):
         yield self.value
         if self.format_spec:
             yield self.format_spec
+
+    def _infer(
+        self, context: InferenceContext | None = None
+    ) -> Generator[InferenceResult, None, InferenceErrorInfo | None]:
+        # Mirrors FormattedValue._infer: an interpolation in a t-string is
+        # formatted the same way as a replacement field in an f-string.
+        format_specs = Const("") if self.format_spec is None else self.format_spec
+        uninferable_already_generated = False
+        for format_spec in format_specs.infer(context):
+            if not isinstance(format_spec, Const):
+                if not uninferable_already_generated:
+                    yield util.Uninferable
+                    uninferable_already_generated = True
+                continue
+            for value in self.value.infer(context):
+                if value is util.Uninferable:
+                    yield util.Uninferable
+                    return
+                value_to_format = value
+                if isinstance(value, Const):
+                    value_to_format = value.value
+                if isinstance(format_spec.value, str) and util.format_spec_too_large(
+                    format_spec.value
+                ):
+                    yield util.Uninferable
+                    uninferable_already_generated = True
+                    continue
+                try:
+                    convert = _FORMAT_CONVERSIONS.get(self.conversion)
+                    if convert is not None and isinstance(value, Const):
+                        formatted = format(convert(value.value), format_spec.value)
+                    else:
+                        formatted = format(value_to_format, format_spec.value)
+                    yield Const(
+                        formatted,
+                        lineno=self.lineno,
+                        col_offset=self.col_offset,
+                        end_lineno=self.end_lineno,
+                        end_col_offset=self.end_col_offset,
+                    )
+                    continue
+                except (ValueError, TypeError, MemoryError, OverflowError):
+                    yield util.Uninferable
+                    uninferable_already_generated = True
+                continue
 
 
 # constants ##############################################################
